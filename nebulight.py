@@ -44,15 +44,15 @@ def _time_str():
     return datetime.datetime.now().strftime("%d.%m %H:%M")
 
 
-def _add_single_job(cursor, cmd, status):
-    cursor.execute("insert into jobs(cmd, status, tries, host, time) values (?, ?, ?, ?, ?)",
-                   (cmd, status, 0, '', _time_str()))
+def _add_single_job(cursor, cmd, logfile, status):
+    cursor.execute("insert into jobs(cmd, logfile, status, tries, host, time) values (?, ?, ?, ?, ?, ?)",
+                   (cmd, logfile, status, 0, '', _time_str()))
 
 
 def _get_or_create_db(db_name):
     conn = sql.connect(db_name)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS jobs (job_id INTEGER PRIMARY KEY, cmd, status, tries, host, time);''')
+    c.execute('''CREATE TABLE IF NOT EXISTS jobs (job_id INTEGER PRIMARY KEY, cmd, logfile, status, tries, host, time);''')
     return conn, c
 
 
@@ -89,15 +89,14 @@ def _update_str(sets, where='job_id'):
 
 
 def _pull_and_process(args, gpu_id=''):
-    delay = random.randrange(1, 10)
-    print("Add random delay of %d seconds to prevent job overlaps." % delay)
+    delay = random.randrange(1, 50) / 10
+    print("Add random delay of %f seconds to prevent job overlaps." % delay)
     time.sleep(delay)
 
     conn, c = _get_or_create_db(args.db_name)
     c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
     try:
-        (id, cmd, stat, tries, _, _) = c.fetchone()
-        _commit_and_close(conn, c)
+        (id, cmd, logfile, stat, tries, _, _) = c.fetchone()
     except Exception as e:
         print("Couldn't pull any new jobs." + e.message)
         _commit_and_close(conn, c)
@@ -105,7 +104,6 @@ def _pull_and_process(args, gpu_id=''):
 
     if tries >= args.max_failures:
         print("This job has failed.")
-        conn, c = _get_or_create_db(args.db_name)
         update_str = _update_str('status')
         c.execute(update_str, (FAILED, id))
         _commit_and_close(conn, c)
@@ -113,38 +111,45 @@ def _pull_and_process(args, gpu_id=''):
 
     print("Try {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
 
-    rc = 1
+    if cmd.startswith('"'): cmd = cmd[1:]
+    if cmd.endswith('"'): cmd = cmd[:-1]
+
     try:
-        proc = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # first, increment try counter
+        update_str = _update_str(['status', 'tries'])
+        c.execute(update_str, (PROCESSING, tries + 1, id))
+
+        log = subprocess.PIPE
+        if len(logfile):
+            log = open(logfile, "w+")
+
+        proc = subprocess.Popen(shlex.split(cmd), stdout=log, stderr=subprocess.PIPE)
 
         host = "{}:{}:{}".format(_host(), gpu_id, proc.pid)
-        c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
-        update_str = _update_str(['status', 'tries', 'host'])
-        c.execute(update_str, (PROCESSING, tries + 1, host, id))
-        _commit_and_close(conn, c)
+        update_str = _update_str(['host'])
+        c.execute(update_str, (host, id))
 
         while True:
-            output = proc.stdout.readline()
+            output = proc.stderr.readline()
             if output == '' and proc.poll() is not None:
                 break
             if output:
-                print('NL>> ' + output.strip())
+                print('ERR>> ' + output.strip())
         rc = proc.poll()
 
         if rc == 0:
-            conn, c = _get_or_create_db(args.db_name)
             update_str = _update_str(['status'])
             c.execute(update_str, (DONE, id))
-            _commit_and_close(conn, c)
             print('Job done. Process ended with return code', rc)
-            return
-    except OSError as e:
+        else:
+            raise Exception("Job failed: failed with return code: "+str(rc))
+    except Exception as e:
         print(e)
 
-    print('Job failed. Process ended with return code', rc)
-    conn, c = _get_or_create_db(args.db_name)
-    update_str = _update_str('status')
-    c.execute(update_str, (QUEUED, id))
+        print('Job failed. Process ended')
+        update_str = _update_str('status')
+        c.execute(update_str, (QUEUED, id))
+
     _commit_and_close(conn, c)
 
 
@@ -215,7 +220,7 @@ def _get_user_confirmation(query="Are you sure?"):
 
 
 def _print_table(cols, rows, print_status=True):
-    max_len_jobname = 91
+    max_len_jobname = 191
 
     if len(rows) == 0:
         return
@@ -226,29 +231,21 @@ def _print_table(cols, rows, print_status=True):
             stats[s] = sum(1 for x in rows if x[2] == s)
 
     len_cmd = min(max(len(x[1]) for x in rows) + 5, max_len_jobname + 6)
-    # TODO(haeusser) remove fallback
-    if len(cols) == 6:
-        len_host = min(max([4] + [len(x[4]) for x in rows]), max_len_jobname + 6) + 2
-    else:
-        len_host = 5
-    str_template = "{:<5}{:<" + str(len_cmd) + "}{:<13}{:<7}{:<" + str(len_host) + "}{:<11}"
+    len_host = min(max([4] + [len(x[5]) for x in rows]), max_len_jobname + 6) + 2
+
+    str_template = "{:<5}{:<" + str(len_cmd) + "}{:<20}{:<13}{:<7}{:<" + str(len_host) + "}{:<11}"
 
     print()
-    header = str_template.format("ID", "COMMAND", "STATUS", "TRIES", "HOST:GPU:PID", "CHANGED")
+    header = str_template.format("ID", "COMMAND", "LOGFILE", "STATUS", "TRIES", "HOST:GPU:PID", "CHANGED")
     print(header)
     print("-" * len(header))
 
     for row in rows:
-        # TODO(haeusser) remove fallback
-        if len(cols) == 6:
-            (id, cmd, stat, tries, host, changed) = row
-        else:
-            (id, cmd, stat, tries) = row
-            host = 'N/A'
-            changed = 'N/A'
+        (id, cmd, logfile, stat, tries, host, changed) = row
+
         host = host or ''
         cmd = ('...' + cmd[-max_len_jobname:]) if len(cmd) > max_len_jobname else cmd
-        print(str_template.format(id, cmd, stat, tries, host, changed))
+        print(str_template.format(id, cmd, logfile, stat, tries, host, changed))
     print("-" * len(header))
 
     if print_status:
@@ -269,7 +266,8 @@ def add(args):
     print('Adding', job)
     conn, c = _get_or_create_db(args.db_name)
     status = HOLD if args.hold else QUEUED
-    _add_single_job(c, job, status)
+    logfile = args.logfile or ""
+    _add_single_job(c, job, logfile, status)
     _commit_and_close(conn, c)
 
 
@@ -336,7 +334,9 @@ def start(args):
     """
     assert os.path.exists(args.db_name), "No joblist found in {}. Please start with adding jobs.".format(args.db_name)
 
-    gpu_id = _query_gpu()
+    gpu_id = args.gpu
+    if args.gpu is None:
+        gpu_id = _query_gpu()
 
     num_queued = _check_for_queued_jobs(args.db_name)
     begin_idle_time = datetime.datetime.now()
@@ -442,12 +442,14 @@ if __name__ == '__main__':
     sp.set_defaults(func=add)
     sp.add_argument('job', help='Command to execute.')
     sp.add_argument('--hold', help='Add with status hold, rather than queued.', action='store_true')
+    sp.add_argument('--logfile', help='A file where logs will be stored.', type=str)
 
     sp = subparsers.add_parser("add_list", help="Add a list of jobs (one per line) from a file to the queue.",
                                parents=[options_parser])
     sp.set_defaults(func=add_list)
     sp.add_argument('joblist', help='File containing commands to execute.')
     sp.add_argument('--hold', help='Add with status hold, rather than queued.', action='store_true')
+    sp.add_argument('--logfile', help='A file where logs will be stored.', action='store_true')
 
     sp = subparsers.add_parser("status", help="Print the current job status.", parents=[options_parser])
     sp.set_defaults(func=status)

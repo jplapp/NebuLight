@@ -8,7 +8,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 def make_call(index):
     print('launching gpu'+str(index))
 
-    proc = subprocess.Popen(['./nebulight.py', 'start', '--gpu=' + str(0)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(['./nebulight.py', 'start', '--gpu=' + str(index)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     while True:
         output = proc.stdout.readline()

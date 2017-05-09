@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-import argcomplete
+#import argcomplete
 
 # Constants.
 QUEUED = 'queued'
@@ -193,9 +193,6 @@ def _query_gpu():
 
     gpu_id = _get_user_input("\nWhich GPU should be used? [0]", '0')  # , [str(x) for x in range(10)])
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = gpu_id
-    print('Set CUDA_VISIBLE_DEVICES to', str(os.environ['CUDA_VISIBLE_DEVICES']))
-
     return gpu_id
 
 
@@ -338,6 +335,9 @@ def start(args):
     gpu_id = args.gpu
     if args.gpu is None:
         gpu_id = _query_gpu()
+
+    os.environ['CUDA_VISIBLE_DEVICES'] = gpu_id
+    print('Set CUDA_VISIBLE_DEVICES to', str(os.environ['CUDA_VISIBLE_DEVICES']))
 
     num_queued = _check_for_queued_jobs(args.db_name)
     begin_idle_time = datetime.datetime.now()
@@ -484,7 +484,7 @@ if __name__ == '__main__':
                     help="One or more job IDs to remove, separated by spaces. Or pass a status like 'done'.", nargs='+')
     sp.set_defaults(func=remove)
 
-    argcomplete.autocomplete(parser)
+    #argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
     args.func(args)

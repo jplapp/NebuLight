@@ -61,8 +61,12 @@ def addTasks(script, params):
 
 
 if __name__ == '__main__':
-    addTasks("~/learning_by_association/semisup/cifar100_train_eval.py", {
-    "learning_rate": [1e-3, 2e-3],
-    "eval_interval": [1000],
-    "max_steps": [2000]
+    addTasks("python3 /usr/stud/plapp/learning_by_association/semisup/cifar100_train_eval.py", {
+      "dataset_dir": ["/usr/stud/plapp/data/cifar100/sup100_20CoarseClasses"],
+      "logdir": ["/usr/stud/plapp/data/logs/cifar100sup100test"],
+      "eval_interval": [5000],
+      "max_steps": [2000],
+      "unsup": [True],
+      "sup_batch_size": [128],
+      "unsup_batch_size": [128, 256]
   })

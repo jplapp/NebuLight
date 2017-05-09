@@ -3,9 +3,10 @@
 import subprocess
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
-
+import time
 
 def make_call(index):
+    time.sleep(index*2)
     print('launching gpu'+str(index))
 
     proc = subprocess.Popen(['./nebulight.py', 'start', '--gpu=' + str(index)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)

@@ -11,7 +11,7 @@ def make_call(index):
     proc = subprocess.Popen(['./nebulight.py', 'start', '--gpu=' + str(index)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     while True:
-        output = proc.stdout.readline()
+        output = proc.stderr.readline()
         if output == '' and proc.poll() is not None:
             print('exit')
             break

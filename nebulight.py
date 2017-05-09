@@ -50,7 +50,7 @@ def _add_single_job(cursor, cmd, logfile, status):
 
 
 def _get_or_create_db(db_name):
-    conn = sql.connect(db_name)
+    conn = sql.connect(db_name, timeout=20)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS jobs (job_id INTEGER PRIMARY KEY, cmd, logfile, status, tries, host, time);''')
     return conn, c
@@ -97,6 +97,7 @@ def _pull_and_process(args, gpu_id=''):
     c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
     try:
         (id, cmd, logfile, stat, tries, _, _) = c.fetchone()
+        _commit_and_close(conn, c)
     except Exception as e:
         print("Couldn't pull any new jobs." + e.message)
         _commit_and_close(conn, c)
@@ -104,6 +105,7 @@ def _pull_and_process(args, gpu_id=''):
 
     if tries >= args.max_failures:
         print("This job has failed.")
+        conn, c = _get_or_create_db(args.db_name)
         update_str = _update_str('status')
         c.execute(update_str, (FAILED, id))
         _commit_and_close(conn, c)
@@ -116,9 +118,10 @@ def _pull_and_process(args, gpu_id=''):
 
     try:
         # first, increment try counter
+        conn, c = _get_or_create_db(args.db_name)
         update_str = _update_str(['status', 'tries'])
         c.execute(update_str, (PROCESSING, tries + 1, id))
-        conn.commit()
+        _commit_and_close(conn, c)
 
         log = subprocess.PIPE
         if len(logfile):
@@ -126,9 +129,11 @@ def _pull_and_process(args, gpu_id=''):
 
         proc = subprocess.Popen(shlex.split(cmd), stdout=log, stderr=subprocess.PIPE)
 
+        conn, c = _get_or_create_db(args.db_name)
         host = "{}:{}:{}".format(_host(), gpu_id, proc.pid)
         update_str = _update_str(['host'])
         c.execute(update_str, (host, id))
+        _commit_and_close(conn, c)
 
         while True:
             output = proc.stderr.readline()
@@ -139,8 +144,10 @@ def _pull_and_process(args, gpu_id=''):
         rc = proc.poll()
 
         if rc == 0:
+            conn, c = _get_or_create_db(args.db_name)
             update_str = _update_str(['status'])
             c.execute(update_str, (DONE, id))
+            _commit_and_close(conn, c)
             print('Job done. Process ended with return code', rc)
         else:
             raise Exception("Job failed: failed with return code: "+str(rc))
@@ -148,10 +155,11 @@ def _pull_and_process(args, gpu_id=''):
         print(e)
 
         print('Job failed. Process ended')
+        conn, c = _get_or_create_db(args.db_name)
         update_str = _update_str('status')
         c.execute(update_str, (QUEUED, id))
+        _commit_and_close(conn, c)
 
-    _commit_and_close(conn, c)
 
 
 def _change_status(args, mode):
